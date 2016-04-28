@@ -164,6 +164,8 @@ class Autoscale
           scale_list = build_scaling_list
           if !scale_list.empty?
             @log.info("#{scale_list.length} apps require scaling")
+          else
+            @log.info("Apps does not require scaling, please check the marathon-lb configuration if its an unexpected behaviour.")
           end
 
           scale_apps(scale_list)
