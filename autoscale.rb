@@ -240,8 +240,7 @@ class Autoscale
   def aggregate_haproxy_data(haproxy_data)
     @apps.each do |app,data|
       if data[:rate].length >= @options.samples
-        data[:rate].rotate!
-        data[:rate].pop
+        data[:rate].shift
       end
       rate = 0
       haproxy_data.each do |d|
