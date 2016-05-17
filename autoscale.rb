@@ -302,7 +302,7 @@ class Autoscale
         [
           [
             (data[:rate_avg] / @options.target_rps).ceil,
-            options.min_instances
+            @options.min_instances
           ].max,
           @options.max_instances
         ].min
