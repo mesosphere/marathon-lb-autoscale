@@ -10,6 +10,8 @@ require 'net/http'
 require 'set'
 require 'json'
 require 'resolv'
+require 'jwt'
+require 'openssl'
 
 class Integer
   N_BYTES = [42].pack('i').size
@@ -21,8 +23,9 @@ end
 class Optparser
   def self.parse(args)
     options = OpenStruct.new
-    options.marathon = ""
-    options.haproxy = []
+    options.debug = false
+    options.marathon = URI("http://master.mesos:8080")
+    options.haproxy = [URI("http://marathon-lb.marathon.mesos:9090")]
     options.interval = 60
     options.samples = 10
     options.cooldown = 5
@@ -33,6 +36,10 @@ class Optparser
     options.intervals_past_threshold = 3
     options.marathonCredentials =  []
     options.haproxyCredentials = []
+    options.use_dcos_security = false
+    options.dcos = URI("https://master.mesos")
+    options.dcos_secret_env_var = "AUTH_SECRET"
+    options.dcos_secret = {}
     options.max_instances = Integer::MAX
     options.min_instances = 1
 
@@ -42,9 +49,17 @@ class Optparser
       opts.separator ""
       opts.separator "Specific options:"
 
+      opts.on("-d", "--[no-]debug", "Enable debug logging. (Default: #{options.debug.to_s})") do |value|
+        options.debug = value
+      end
+
       opts.on("--marathon URL", URI,
               "URL for Marathon") do |value|
         options.marathon = value
+      end
+
+      opts.on("--dcos URL", URI, "URL for DCOS. (Default: #{options.dcos}") do |value|
+        options.dcos = value
       end
 
       opts.on("--haproxy [URLs]",
@@ -83,6 +98,15 @@ class Optparser
 
       opts.on("--haproxyCredentials [HAProxyCredentials]", "Colon separated string of <username>:<password>") do |value|
         options.haproxyCredentials = value.split(/:/)
+      end
+
+      opts.on("--[no-]useDcosSecurity", "requires use of auth tokens for DCOS with security (Default: #{options.use_dcos_security.to_s})") do |value|
+        options.use_dcos_security = value
+      end
+
+      opts.on("--dcosSecretEnvVar [DcosSecretEnvVar]", "name of env var containing service login token, " +
+              "if using DCOS with security enabled. (Default: " + "#{options.dcos_secret_env_var})") do |value|
+        options.dcos_secret_env_var = value
       end
 
       opts.on("--threshold-percent Float", Float, "Scaling will occur when the target RPS " +
@@ -127,8 +151,13 @@ end
 class Autoscale
   def initialize(options)
     @options = options
+    @options.dcos_secret = JSON.parse(ENV[@options.dcos_secret_env_var]) if !@options.dcos_secret_env_var.empty?
     @log = Logger.new(STDOUT)
-    @log.level = Logger::INFO
+    if @options.debug
+      @log.level = Logger::DEBUG
+    else
+      @log.level = Logger::INFO
+    end
     @log.formatter = proc do |severity, datetime, progname, msg|
       date_format = datetime.strftime("%FT%T")
       if severity == "ERROR" or severity == "WARN"
@@ -185,6 +214,7 @@ class Autoscale
         end
 
         total_samples += 1
+        @log.debug "Collected #{total_samples} samples"
       rescue Exception => msg
         @log.error("Caught exception: " + msg.to_s)
         @log.error(msg.backtrace)
@@ -270,14 +300,18 @@ class Autoscale
 
   def update_current_marathon_instances
     req = Net::HTTP::Get.new('/v2/apps')
+    if @options.use_dcos_security
+      @options.dcos_auth_token ||= dcos_auth_token
+      req["Authorization"] = "token=#{@options.dcos_auth_token}"
+    end
+
     if !@options.marathonCredentials.empty?
       req.basic_auth @options.marathonCredentials[0], @options.marathonCredentials[1]
     end
 
-    res = Net::HTTP.start(@options.marathon.host,
-                          @options.marathon.port) {|http|
-      http.request(req)
-    }
+    http = Net::HTTP.new(@options.marathon.host, @options.marathon.port)
+    res = http.request(req)
+    res.value
     apps = JSON.parse(res.body)
 
     instances = {}
@@ -312,6 +346,9 @@ class Autoscale
     @apps.each do |app,data|
       app_id = app.match(/(.*)_\d+$/)[1]
       app_id = app_id.dup.gsub '_', '/' # support for folders.
+
+      @log.debug("app_id=#{app_id} rate_avg=#{data[:rate_avg]}/#{data[:current_instances]} " +
+                "target_rps=#{@options.target_rps} current_rps=#{data[:rate_avg] / data[:current_instances]}")
 
       # Scale if: the target and current instances don't match, we've exceed the
       # threshold difference, and a scale operation wasn't performed recently
@@ -351,8 +388,16 @@ class Autoscale
   end
 
   def scale_apps(scale_list)
+    @log.debug "#{scale_list.length} apps to scale"
     scale_list.each do |app,instances|
+      @log.info "Scaling #{app} to #{instances} instances..."
       req = Net::HTTP::Put.new('/v2/apps/' + app)
+
+      if @options.use_dcos_security
+        @options.dcos_auth_token ||= dcos_auth_token
+        req["Authorization"] = "token=#{@options.dcos_auth_token}"
+      end
+
       if !@options.marathonCredentials.empty?
         req.basic_auth(@options.marathonCredentials[0],
                        @options.marathonCredentials[1])
@@ -365,6 +410,30 @@ class Autoscale
         http.request(req)
       end
     end
+  end
+
+  def service_login_token
+    JWT.encode(
+      {:uid => @options.dcos_secret['uid']},
+      OpenSSL::PKey::RSA.new(@options.dcos_secret['private_key']),
+      @options.dcos_secret['scheme']
+    )
+  end
+
+  def dcos_auth_token
+    req = Net::HTTP::Post.new('/acs/api/v1/auth/login')
+    req.content_type = 'application/json'
+    req.body = JSON.generate({
+      'uid' => @options.dcos_secret['uid'],
+      'token' => service_login_token
+    })
+    http = Net::HTTP.new(@options.dcos.host, @options.dcos.port)
+    if @options.dcos.scheme == 'https'
+      http.use_ssl = true
+      http.verify_mode = OpenSSL::SSL::VERIFY_NONE
+    end
+    res = http.request(req)
+    JSON.parse(res.body)['token']
   end
 end
 
