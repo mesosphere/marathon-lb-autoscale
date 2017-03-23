@@ -68,7 +68,7 @@ class Optparser
         options.cooldown = value
       end
 
-      opts.on("--target-rps Integer", Integer, "Target number of requests per second per " +
+      opts.on("--target-rps Float", Float, "Target number of requests per second per " +
               "app instance (Default: #{options.target_rps})") do |value|
         options.target_rps = value
       end
