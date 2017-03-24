@@ -23,7 +23,7 @@ Specific options:
         --interval Float             Number of seconds (N) between update intervals (Default: 60)
         --samples Integer            Number of samples to average (Default: 10)
         --cooldown Integer           Number of additional intervals to wait after making a scale change (Default: 5)
-        --target-rps Integer         Target number of requests per second per app instance (Default: 1000)
+        --target-rps Float         Target number of requests per second per app instance (Default: 1000)
         --apps [APPS]                Comma separated list of <app>_<service port> pairs to monitor
         --marathonCredentials [MarathonCredentials]
                                      Colon separated string of <username>:<password>
