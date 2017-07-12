@@ -34,6 +34,8 @@ Specific options:
                                      Scaling will occur when the target number of instances differs from the actual number by at least this amount (Default: 3)
         --max-instances Integer      Maximum number of instances an app may be scaled to (Default: a huge number)
         --min-instances Integer      Minimum number of instances an app must have (Default: 1)
+        --haproxy_frontend_or_backend String
+                                     If we have to monitor stats from backends (option BACKEND) or frontends (option FRONTEND) (Default: FRONTEND)
 
 Common options:
     -h, --help                       Show this message
