@@ -35,6 +35,7 @@ class Optparser
     options.haproxyCredentials = []
     options.max_instances = Integer::MAX
     options.min_instances = 1
+    options.haproxy_frontend_or_backend = "FRONTEND"
 
     opt_parser = OptionParser.new do |opts|
       opts.banner = "Usage: autoscale.rb [options]"
@@ -107,6 +108,12 @@ class Optparser
               "of instances an app must have (Default: " +
               "#{options.min_instances})") do |value|
         options.min_instances = value
+      end
+
+      opts.on("--haproxy_frontend_or_backend String", String, "If we have " +
+              "to monitor backend or frontends in haproxy (Default: " +
+              "#{options.haproxy_frontend_or_backend})") do |value|
+        options.haproxy_frontend_or_backend = value
       end
 
       opts.separator ""
@@ -205,7 +212,7 @@ class Autoscale
     header_labels
   end
 
-  def parse_haproxy_frontends(csv, header_labels)
+  def parse_haproxy_zones(csv, header_labels)
     csv = csv.select do |line|
       # Drop all lines which are empty or begin with # or empty
       !line.match(/^\s*#/) && !line.match(/^\s*$/)
@@ -213,18 +220,18 @@ class Autoscale
     samples = csv.map do |line|
       line.split(/,/)
     end.select do |line|
-      line[1].match('FRONTEND')
+      line[1].match(@options.haproxy_frontend_or_backend)
     end
 
-    frontends = {}
+    zones = {}
     samples.each do |sample|
       data = {}
       header_labels.each do |i,label|
         data[label.to_sym] = sample[i]
       end
-      frontends[sample[0]] = data
+      zones[sample[0]] = data
     end
-    frontends
+    zones
   end
 
   def sample(haproxy)
@@ -242,14 +249,14 @@ class Autoscale
     csv = res.body.split(/\r?\n/)
 
     header_labels = parse_haproxy_header_labels(csv)
-    frontends = parse_haproxy_frontends(csv, header_labels)
+    zones = parse_haproxy_zones(csv, header_labels)
 
     # Now we've got all the frontend data sampled in `frontends`
-    frontends = frontends.select do |name|
+    zones = zones.select do |name|
       @options.apps.include?(name)
     end
 
-    frontends
+    zones
   end
 
   def aggregate_haproxy_data(haproxy_data)
