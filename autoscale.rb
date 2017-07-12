@@ -35,6 +35,8 @@ class Optparser
     options.haproxyCredentials = []
     options.max_instances = Integer::MAX
     options.min_instances = 1
+    options.verbose = false
+    options.haproxy_frontend_or_backend = "FRONTEND"
 
     opt_parser = OptionParser.new do |opts|
       opts.banner = "Usage: autoscale.rb [options]"
@@ -109,6 +111,16 @@ class Optparser
         options.min_instances = value
       end
 
+      opts.on("-v", "--[no-]verbose", "Run verbosely") do |value|
+        options.verbose = value
+      end
+      
+      opts.on("--haproxy_frontend_or_backend String", String, "If we have " +
+              "to monitor backend or frontends in haproxy (Default: " +
+              "#{options.haproxy_frontend_or_backend})") do |value|
+        options.haproxy_frontend_or_backend = value
+      end
+
       opts.separator ""
       opts.separator "Common options:"
 
@@ -129,6 +141,9 @@ class Autoscale
     @options = options
     @log = Logger.new(STDOUT)
     @log.level = Logger::INFO
+    if options.verbose == true
+      @log.level = Logger::DEBUG
+    end
     @log.formatter = proc do |severity, datetime, progname, msg|
       date_format = datetime.strftime("%FT%T")
       if severity == "ERROR" or severity == "WARN"
@@ -171,6 +186,8 @@ class Autoscale
         end
         aggregate_haproxy_data(haproxy_data)
 
+        @log.debug("HA-Proxy data: %p" % haproxy_data)
+
         update_current_marathon_instances
 
         calculate_target_instances
@@ -185,6 +202,7 @@ class Autoscale
         end
 
         total_samples += 1
+        @log.debug("total sample %d" % total_samples)
       rescue Exception => msg
         @log.error("Caught exception: " + msg.to_s)
         @log.error(msg.backtrace)
@@ -205,7 +223,7 @@ class Autoscale
     header_labels
   end
 
-  def parse_haproxy_frontends(csv, header_labels)
+  def parse_haproxy_zones(csv, header_labels)
     csv = csv.select do |line|
       # Drop all lines which are empty or begin with # or empty
       !line.match(/^\s*#/) && !line.match(/^\s*$/)
@@ -213,18 +231,18 @@ class Autoscale
     samples = csv.map do |line|
       line.split(/,/)
     end.select do |line|
-      line[1].match('FRONTEND')
+      line[1].match(@options.haproxy_frontend_or_backend)
     end
 
-    frontends = {}
+    zones = {}
     samples.each do |sample|
       data = {}
       header_labels.each do |i,label|
         data[label.to_sym] = sample[i]
       end
-      frontends[sample[0]] = data
+      zones[sample[0]] = data
     end
-    frontends
+    zones
   end
 
   def sample(haproxy)
@@ -242,14 +260,14 @@ class Autoscale
     csv = res.body.split(/\r?\n/)
 
     header_labels = parse_haproxy_header_labels(csv)
-    frontends = parse_haproxy_frontends(csv, header_labels)
+    zones = parse_haproxy_zones(csv, header_labels)
 
     # Now we've got all the frontend data sampled in `frontends`
-    frontends = frontends.select do |name|
+    zones = zones.select do |name|
       @options.apps.include?(name)
     end
 
-    frontends
+    zones
   end
 
   def aggregate_haproxy_data(haproxy_data)
@@ -265,6 +283,7 @@ class Autoscale
       data[:rate] << rate
       data[:rate_avg] =
         data[:rate].inject(0.0) { |sum,el| sum + el } / data[:rate].size
+      @log.debug("AVG Rate for %s: %0.2f" % [app, data[:rate_avg]])
     end
   end
 
@@ -291,6 +310,7 @@ class Autoscale
       if instances.has_key?(app_id)
         data[:current_instances] = instances[app_id]
       end
+      @log.debug("%s currently has %d instances" % [app, data[:current_instances]])
     end
   end
 
@@ -304,6 +324,7 @@ class Autoscale
           ].max,
           @options.max_instances
         ].min
+      @log.debug("%s should target for %d instances" % [app, data[:target_instances]])
     end
   end
 
@@ -347,6 +368,7 @@ class Autoscale
         data[:last_scaled] = Time.now.to_f
       end
     end
+    @log.debug("Scale list %p "% to_scale)
     to_scale
   end
 
